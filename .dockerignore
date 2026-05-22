@@ -1,5 +1,15 @@
-target
 .git
 .gitignore
-node_modules
+.mvn
+mvnw
+mvnw.cmd
 README.md
+target/
+logs/
+*.log
+.DS_Store
+.idea
+*.iml
+.vscode
+.env.backup
+*.md
