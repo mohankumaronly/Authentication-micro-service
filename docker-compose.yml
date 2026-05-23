@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   # MySQL Database Service
   mysql:
@@ -11,7 +9,6 @@ services:
       MYSQL_ROOT_PASSWORD: root123
       MYSQL_ROOT_HOST: '%'
     ports:
-      # Map to 3307 to avoid conflict with Windows MySQL
       - "3307:3306"
     volumes:
       - mysql_data:/var/lib/mysql
@@ -38,35 +35,39 @@ services:
     depends_on:
       mysql:
         condition: service_healthy
+    env_file:
+      - .env   # ✅ Load all environment variables from .env file
     environment:
-      # Database configuration - using service name 'mysql' not localhost
+      # Override database connection for Docker (use service name, not localhost)
       SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/auth_db?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
       SPRING_DATASOURCE_USERNAME: root
       SPRING_DATASOURCE_PASSWORD: root123
-      SPRING_DATASOURCE_DRIVER: com.mysql.cj.jdbc.Driver
 
       # JPA configuration
       SPRING_JPA_HIBERNATE_DDL_AUTO: update
-      SPRING_JPA_DATABASE_PLATFORM: org.hibernate.dialect.MySQL8Dialect
       SPRING_JPA_SHOW_SQL: "true"
 
-      # JWT Configuration (use a default for testing)
-      JWT_SECRET: ${JWT_SECRET:-404E635266556A586E3272357538782F413F4428472B4B6250645367566B5970}
-      JWT_ACCESS_EXPIRATION: 900000
-      JWT_REFRESH_EXPIRATION: 604800000
+      # JWT Configuration
+      JWT_SECRET: ${JWT_SECRET}
 
-      # Logging
-      LOGGING_LEVEL_COM_ROCKRAGER_AUTHENTICATION: DEBUG
+      # Mail Configuration - Will be taken from .env file
+      # No need to override here since .env has correct values
 
       # App URLs
-      APP_BASE_URL: http://localhost:8080
-      FRONTEND_URL: http://localhost:3000
+      APP_BASE_URL: ${APP_BASE_URL}
+      FRONTEND_URL: ${FRONTEND_URL}
 
-      # Mail (temporarily disable for testing)
-      MAIL_HOST: dummy
-      MAIL_PORT: 25
-      MAIL_USERNAME: dummy
-      MAIL_PASSWORD: dummy
+      # Cookie Configuration
+      COOKIE_SECURE: ${COOKIE_SECURE}
+      COOKIE_SAME_SITE: ${COOKIE_SAME_SITE}
+
+      # CORS
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS}
+
+      # Google OAuth
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET}
+      GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI}
     networks:
       - auth-network
     healthcheck:
@@ -76,7 +77,7 @@ services:
       retries: 3
       start_period: 40s
 
-  # Optional: Add PHPMyAdmin for database management (useful for debugging)
+  # PHPMyAdmin for database management
   phpmyadmin:
     image: phpmyadmin/phpmyadmin
     container_name: auth-phpmyadmin

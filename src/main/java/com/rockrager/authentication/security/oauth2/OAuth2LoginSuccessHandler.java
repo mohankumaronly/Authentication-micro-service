@@ -146,8 +146,20 @@ public class OAuth2LoginSuccessHandler extends SimpleUrlAuthenticationSuccessHan
             sendLoginNotificationEmail(user, ipAddress, location, deviceInfo, isNewDevice, isNewLocation);
         }
 
-        String accessToken = jwtService.generateAccessToken(user.getEmail());
-        String refreshToken = jwtService.generateRefreshToken(user.getEmail());
+        // ✅ FIXED: Generate session ID and use enhanced JWT methods
+        String sessionId = UUID.randomUUID().toString();
+
+        String accessToken = jwtService.generateAccessToken(
+                user.getEmail(),
+                user.getId(),
+                user.getRole(),
+                sessionId
+        );
+        String refreshToken = jwtService.generateRefreshToken(
+                user.getEmail(),
+                user.getId(),
+                sessionId
+        );
 
         user.setLastLoginAt(LocalDateTime.now());
         user.setLastLoginIp(ipAddress);
@@ -157,7 +169,7 @@ public class OAuth2LoginSuccessHandler extends SimpleUrlAuthenticationSuccessHan
 
         UserSession session = UserSession.builder()
                 .user(user)
-                .sessionId(UUID.randomUUID().toString())
+                .sessionId(sessionId)
                 .deviceInfo(deviceInfo)
                 .ipAddress(ipAddress)
                 .location(location)

@@ -1,9 +1,9 @@
 package com.rockrager.authentication.service;
 
 import com.rockrager.authentication.dto.request.LoginRequest;
+import com.rockrager.authentication.dto.request.OtpVerificationRequest;
 import com.rockrager.authentication.dto.request.RegisterRequest;
 import com.rockrager.authentication.dto.response.AuthResponse;
-import com.rockrager.authentication.dto.response.LoginInitiateResponse;
 import com.rockrager.authentication.entity.*;
 import com.rockrager.authentication.repository.*;
 import com.rockrager.authentication.security.jwt.JwtService;
@@ -60,7 +60,6 @@ public class AuthService {
         User savedUser = userRepository.save(user);
         log.info("User saved with ID: {}", savedUser.getId());
 
-        // Generate session ID for this user session
         String sessionId = UUID.randomUUID().toString();
 
         String accessToken = jwtService.generateAccessToken(
@@ -86,7 +85,6 @@ public class AuthService {
 
         refreshTokenRepository.save(refreshTokenEntity);
 
-        // Save user session
         UserSession userSession = UserSession.builder()
                 .user(savedUser)
                 .sessionId(sessionId)
@@ -125,6 +123,7 @@ public class AuthService {
 
     @Transactional
     public AuthResponse login(LoginRequest request) {
+        log.info("Login attempt for email: {}", maskEmail(request.getEmail()));
 
         User user = userRepository.findByEmail(request.getEmail())
                 .orElseThrow(() -> new RuntimeException("Invalid email or password"));
@@ -137,26 +136,12 @@ public class AuthService {
             throw new RuntimeException("Please verify your email first. Check your inbox for verification link.");
         }
 
-        boolean hasLoggedInBefore = user.getLoginCount() > 0;
+        boolean isFirstTimeLogin = user.getLoginCount() == 0;
 
-        log.info("User login attempt for: {}, Login count: {}, hasLoggedInBefore: {}",
-                user.getEmail(), user.getLoginCount(), hasLoggedInBefore);
-
-        if (hasLoggedInBefore) {
-            log.info("Existing user - returning requiresOtp: true for: {}", user.getEmail());
-
-            String maskedEmail = maskEmail(user.getEmail());
-
-            return AuthResponse.builder()
-                    .requiresOtp(true)
-                    .message("Please verify your identity")
-                    .email(maskedEmail)
-                    .build();
-        } else {
+        if (isFirstTimeLogin) {
             log.info("First time login for user: {}", user.getEmail());
 
             String sessionId = UUID.randomUUID().toString();
-
             String accessToken = jwtService.generateAccessToken(
                     user.getEmail(),
                     user.getId(),
@@ -170,17 +155,25 @@ public class AuthService {
             );
 
             refreshTokenRepository.deleteByUser(user);
-
             RefreshToken refreshTokenEntity = RefreshToken.builder()
                     .user(user)
                     .token(refreshToken)
                     .expiresAt(LocalDateTime.now().plusDays(7))
                     .revoked(false)
                     .build();
-
             refreshTokenRepository.save(refreshTokenEntity);
 
-            user.setLoginCount(user.getLoginCount() + 1);
+            UserSession userSession = UserSession.builder()
+                    .user(user)
+                    .sessionId(sessionId)
+                    .loginAt(LocalDateTime.now())
+                    .active(true)
+                    .deviceInfo(request.getDeviceInfo())
+                    .ipAddress(request.getIpAddress())
+                    .build();
+            userSessionRepository.save(userSession);
+
+            user.setLoginCount(1);
             user.setLastLoginAt(LocalDateTime.now());
             user.setLastLoginDevice(request.getDeviceInfo());
             user.setLastLoginIp(request.getIpAddress());
@@ -190,6 +183,29 @@ public class AuthService {
                     .accessToken(accessToken)
                     .refreshToken(refreshToken)
                     .message("Login successful")
+                    .build();
+        } else {
+            log.info("Returning user - sending OTP for: {}", user.getEmail());
+
+            otpCodeRepository.deleteByUserAndUsedFalse(user);
+
+            String sessionId = UUID.randomUUID().toString();
+
+            String otpCode = otpService.generateAndSendOtp(
+                    user,
+                    sessionId,
+                    request.getDeviceInfo(),
+                    request.getIpAddress()
+            );
+
+            log.info("OTP sent to user: {} for session: {}", user.getEmail(), sessionId);
+
+            return AuthResponse.builder()
+                    .requiresOtp(true)
+                    .sessionId(sessionId)
+                    .email(maskEmail(user.getEmail()))
+                    .message("OTP sent to your email. Please verify to complete login.")
+                    .expiresIn((long) otpService.getOtpExpirySeconds())
                     .build();
         }
     }
@@ -212,7 +228,6 @@ public class AuthService {
 
         User user = storedToken.getUser();
 
-        // Create new session ID for refreshed token
         String sessionId = UUID.randomUUID().toString();
 
         String newAccessToken = jwtService.generateAccessToken(
@@ -354,121 +369,20 @@ public class AuthService {
     }
 
     @Transactional
-    public LoginInitiateResponse initiateLogin(LoginRequest request) {
-        log.info("INITIATE LOGIN - START");
-
-        String originalEmail = request.getEmail();
-        log.info("Original email for lookup: {}", originalEmail);
-
-        log.info("Request password length: {}", request.getPassword() != null ? request.getPassword().length() : 0);
-        log.info("Request device info: {}", request.getDeviceInfo());
-        log.info("Request IP address: {}", request.getIpAddress());
-
-        log.info("Searching for user with email: {}", originalEmail);
-        User user = userRepository.findByEmail(originalEmail)
-                .orElseThrow(() -> {
-                    log.error("User not found with email: {}", originalEmail);
-                    return new RuntimeException("Invalid email or password");
-                });
-
-        log.info("User found - ID: {}, Email: {}, Login Count: {}, Auth Provider: {}",
-                user.getId(), user.getEmail(), user.getLoginCount(), user.getAuthProvider());
-
-        if (user.getAuthProvider() == AuthProvider.GOOGLE && (user.getPassword() == null || user.getPassword().isEmpty())) {
-            log.warn("User {} is Google-only account with no password", user.getEmail());
-            throw new RuntimeException("This account uses Google login. Please sign in with Google.");
-        }
-
-        if (user.getGoogleId() != null && user.getAuthProvider() == AuthProvider.LOCAL) {
-            log.info("User with linked Google account logging in with password: {}", request.getEmail());
-        }
-
-        log.info("Validating password...");
-        boolean passwordMatches = passwordEncoder.matches(request.getPassword(), user.getPassword());
-        log.info("Password matches: {}", passwordMatches);
-
-        if (!passwordMatches) {
-            log.error("Password mismatch for user: {}", originalEmail);
-            throw new RuntimeException("Invalid email or password");
-        }
-        log.info("Password validated successfully");
-
-        log.info("Checking email verification status...");
-        if (!user.isEmailVerified()) {
-            log.warn("User {} has not verified email", user.getEmail());
-            throw new RuntimeException("Please verify your email first. Check your inbox for verification link.");
-        }
-        log.info("Email is verified");
-
-        otpCodeRepository.deleteByUserAndUsedFalse(user);
-        log.info("Cleared any existing unused OTPs for user: {}", user.getEmail());
-
-        String sessionId = UUID.randomUUID().toString();
-        log.info("Generated session ID: {}", sessionId);
-
-        log.info("Generating and sending OTP...");
-        String otpCode = otpService.generateAndSendOtp(
-                user,
-                sessionId,
-                request.getDeviceInfo(),
-                request.getIpAddress()
-        );
-        log.info("OTP generated and sent - Code: {}", otpCode);
-
-        log.info("OTP sent to user: {} for session: {}", user.getEmail(), sessionId);
-
-        String maskedEmail = maskEmail(user.getEmail());
-        log.info("Masked email for response: {}", maskedEmail);
-
-        log.info("INITIATE LOGIN - SUCCESS");
-
-        return LoginInitiateResponse.builder()
-                .sessionId(sessionId)
-                .otpRequired(true)
-                .message("OTP sent to your email address")
-                .otpSentTo(maskedEmail)
-                .expiresIn((long) otpService.getOtpExpirySeconds())
-                .build();
-    }
-
-    @Transactional
-    public AuthResponse verifyOtpAndLogin(com.rockrager.authentication.dto.request.OtpVerificationRequest request) {
+    public AuthResponse verifyOtpAndLogin(OtpVerificationRequest request) {
         log.info("Verifying OTP for session: {}", request.getSessionId());
 
         boolean isValid = otpService.validateOtp(request.getSessionId(), request.getOtpCode());
-
         if (!isValid) {
             throw new RuntimeException("Invalid or expired OTP. Please try again.");
         }
 
-        com.rockrager.authentication.entity.OtpCode otpRecord = otpService.getOtpRecord(request.getSessionId())
+        OtpCode otpRecord = otpService.getOtpRecord(request.getSessionId())
                 .orElseThrow(() -> new RuntimeException("Session not found"));
 
         User user = otpRecord.getUser();
 
-        if (user.getAuthProvider() == AuthProvider.GOOGLE && (user.getPassword() == null || user.getPassword().isEmpty())) {
-            throw new RuntimeException("This account uses Google login. Please sign in with Google.");
-        }
-
-        user.setLastLoginAt(LocalDateTime.now());
-        user.setLastLoginIp(otpRecord.getIpAddress());
-        user.setLastLoginDevice(otpRecord.getDeviceInfo());
-
-        user.setLoginCount(user.getLoginCount() + 1);
-
-        try {
-            String location = deviceInfoService.getLocationFromIp(otpRecord.getIpAddress());
-            user.setLastLoginLocation(location);
-        } catch (Exception e) {
-            log.warn("Could not get location for IP: {}", otpRecord.getIpAddress());
-            user.setLastLoginLocation("Unknown");
-        }
-
-        userRepository.save(user);
-
-        // Generate new session ID for this login
         String sessionId = UUID.randomUUID().toString();
-
         String accessToken = jwtService.generateAccessToken(
                 user.getEmail(),
                 user.getId(),
@@ -490,7 +404,6 @@ public class AuthService {
                 .build();
         refreshTokenRepository.save(refreshTokenEntity);
 
-        // Save user session
         UserSession userSession = UserSession.builder()
                 .user(user)
                 .sessionId(sessionId)
@@ -498,9 +411,22 @@ public class AuthService {
                 .active(true)
                 .deviceInfo(otpRecord.getDeviceInfo())
                 .ipAddress(otpRecord.getIpAddress())
-                .location(user.getLastLoginLocation())
                 .build();
         userSessionRepository.save(userSession);
+
+        try {
+            String location = deviceInfoService.getLocationFromIp(otpRecord.getIpAddress());
+            user.setLastLoginLocation(location);
+            userSession.setLocation(location);
+        } catch (Exception e) {
+            log.warn("Could not get location for IP: {}", otpRecord.getIpAddress());
+        }
+
+        user.setLoginCount(user.getLoginCount() + 1);
+        user.setLastLoginAt(LocalDateTime.now());
+        user.setLastLoginDevice(otpRecord.getDeviceInfo());
+        user.setLastLoginIp(otpRecord.getIpAddress());
+        userRepository.save(user);
 
         try {
             sendLoginNotificationEmail(user, otpRecord);
@@ -519,7 +445,7 @@ public class AuthService {
                 .build();
     }
 
-    private void sendLoginNotificationEmail(User user, com.rockrager.authentication.entity.OtpCode otpRecord) {
+    private void sendLoginNotificationEmail(User user, OtpCode otpRecord) {
         String subject = "New Login Detected - RockRager Authentication";
 
         String deviceInfo = otpRecord.getDeviceInfo() != null ? otpRecord.getDeviceInfo() : "Unknown Device";
