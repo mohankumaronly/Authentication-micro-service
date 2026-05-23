@@ -5,12 +5,8 @@ import com.rockrager.authentication.dto.request.RegisterRequest;
 import com.rockrager.authentication.dto.response.AuthResponse;
 import com.rockrager.authentication.dto.response.LoginInitiateResponse;
 import com.rockrager.authentication.entity.*;
-import com.rockrager.authentication.repository.EmailVerificationTokenRepository;
-import com.rockrager.authentication.repository.PasswordResetTokenRepository;
-import com.rockrager.authentication.repository.RefreshTokenRepository;
-import com.rockrager.authentication.repository.UserRepository;
+import com.rockrager.authentication.repository.*;
 import com.rockrager.authentication.security.jwt.JwtService;
-import com.rockrager.authentication.repository.OtpCodeRepository;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -37,6 +33,7 @@ public class AuthService {
     private final EmailService emailService;
     private final OtpService otpService;
     private final DeviceInfoService deviceInfoService;
+    private final UserSessionRepository userSessionRepository;
 
     @Transactional
     public AuthResponse register(RegisterRequest request) {
@@ -63,8 +60,20 @@ public class AuthService {
         User savedUser = userRepository.save(user);
         log.info("User saved with ID: {}", savedUser.getId());
 
-        String accessToken = jwtService.generateAccessToken(savedUser.getEmail());
-        String refreshToken = jwtService.generateRefreshToken(savedUser.getEmail());
+        // Generate session ID for this user session
+        String sessionId = UUID.randomUUID().toString();
+
+        String accessToken = jwtService.generateAccessToken(
+                savedUser.getEmail(),
+                savedUser.getId(),
+                savedUser.getRole(),
+                sessionId
+        );
+        String refreshToken = jwtService.generateRefreshToken(
+                savedUser.getEmail(),
+                savedUser.getId(),
+                sessionId
+        );
 
         refreshTokenRepository.deleteByUser(savedUser);
 
@@ -76,6 +85,15 @@ public class AuthService {
                 .build();
 
         refreshTokenRepository.save(refreshTokenEntity);
+
+        // Save user session
+        UserSession userSession = UserSession.builder()
+                .user(savedUser)
+                .sessionId(sessionId)
+                .loginAt(LocalDateTime.now())
+                .active(true)
+                .build();
+        userSessionRepository.save(userSession);
 
         String verificationToken = UUID.randomUUID().toString();
 
@@ -137,8 +155,19 @@ public class AuthService {
         } else {
             log.info("First time login for user: {}", user.getEmail());
 
-            String accessToken = jwtService.generateAccessToken(user.getEmail());
-            String refreshToken = jwtService.generateRefreshToken(user.getEmail());
+            String sessionId = UUID.randomUUID().toString();
+
+            String accessToken = jwtService.generateAccessToken(
+                    user.getEmail(),
+                    user.getId(),
+                    user.getRole(),
+                    sessionId
+            );
+            String refreshToken = jwtService.generateRefreshToken(
+                    user.getEmail(),
+                    user.getId(),
+                    sessionId
+            );
 
             refreshTokenRepository.deleteByUser(user);
 
@@ -183,7 +212,15 @@ public class AuthService {
 
         User user = storedToken.getUser();
 
-        String newAccessToken = jwtService.generateAccessToken(user.getEmail());
+        // Create new session ID for refreshed token
+        String sessionId = UUID.randomUUID().toString();
+
+        String newAccessToken = jwtService.generateAccessToken(
+                user.getEmail(),
+                user.getId(),
+                user.getRole(),
+                sessionId
+        );
 
         return AuthResponse.builder()
                 .accessToken(newAccessToken)
@@ -429,8 +466,20 @@ public class AuthService {
 
         userRepository.save(user);
 
-        String accessToken = jwtService.generateAccessToken(user.getEmail());
-        String refreshToken = jwtService.generateRefreshToken(user.getEmail());
+        // Generate new session ID for this login
+        String sessionId = UUID.randomUUID().toString();
+
+        String accessToken = jwtService.generateAccessToken(
+                user.getEmail(),
+                user.getId(),
+                user.getRole(),
+                sessionId
+        );
+        String refreshToken = jwtService.generateRefreshToken(
+                user.getEmail(),
+                user.getId(),
+                sessionId
+        );
 
         refreshTokenRepository.deleteByUser(user);
         RefreshToken refreshTokenEntity = RefreshToken.builder()
@@ -440,6 +489,18 @@ public class AuthService {
                 .revoked(false)
                 .build();
         refreshTokenRepository.save(refreshTokenEntity);
+
+        // Save user session
+        UserSession userSession = UserSession.builder()
+                .user(user)
+                .sessionId(sessionId)
+                .loginAt(LocalDateTime.now())
+                .active(true)
+                .deviceInfo(otpRecord.getDeviceInfo())
+                .ipAddress(otpRecord.getIpAddress())
+                .location(user.getLastLoginLocation())
+                .build();
+        userSessionRepository.save(userSession);
 
         try {
             sendLoginNotificationEmail(user, otpRecord);

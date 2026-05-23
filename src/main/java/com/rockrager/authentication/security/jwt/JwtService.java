@@ -8,7 +8,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.security.Key;
-import java.util.Date;
+import java.util.*;
 import java.util.function.Function;
 
 @Service
@@ -31,23 +31,137 @@ public class JwtService {
         return Keys.hmacShaKeyFor(keyBytes);
     }
 
-    public String generateAccessToken(String email) {
+    // ========== ENHANCED TOKEN GENERATION ==========
+
+    public String generateAccessToken(String email, UUID userId, String role, String sessionId) {
+        Map<String, Object> claims = new HashMap<>();
+        claims.put("userId", userId.toString());
+        claims.put("role", role);
+        claims.put("sessionId", sessionId);
+        claims.put("serviceAccess", Arrays.asList("auth-service", "payment-service", "chat-service"));
+        claims.put("permissions", getPermissionsForRole(role));
+        claims.put("tokenType", "access");
+        claims.put("iss", "auth-service");
+        claims.put("aud", Arrays.asList("payment-service", "chat-service", "auth-service"));
+
         return Jwts.builder()
+                .setClaims(claims)
                 .setSubject(email)
                 .setIssuedAt(new Date())
+                .setId(UUID.randomUUID().toString())
                 .setExpiration(new Date(System.currentTimeMillis() + accessTokenExpiration))
                 .signWith(getSigningKey(), SignatureAlgorithm.HS256)
                 .compact();
     }
 
-    public String generateRefreshToken(String email) {
+    public String generateRefreshToken(String email, UUID userId, String sessionId) {
+        Map<String, Object> claims = new HashMap<>();
+        claims.put("userId", userId.toString());
+        claims.put("sessionId", sessionId);
+        claims.put("tokenType", "refresh");
+
         return Jwts.builder()
+                .setClaims(claims)
                 .setSubject(email)
                 .setIssuedAt(new Date())
+                .setId(UUID.randomUUID().toString())
                 .setExpiration(new Date(System.currentTimeMillis() + refreshTokenExpiration))
                 .signWith(getSigningKey(), SignatureAlgorithm.HS256)
                 .compact();
     }
+
+    private List<String> getPermissionsForRole(String role) {
+        switch (role.toUpperCase()) {
+            case "ADMIN":
+                return Arrays.asList("read:all", "write:all", "delete:all", "access:payment", "access:chat");
+            case "PREMIUM_USER":
+                return Arrays.asList("read:profile", "write:profile", "access:payment", "access:chat", "premium:content");
+            case "USER":
+            default:
+                return Arrays.asList("read:profile", "write:profile", "access:chat");
+        }
+    }
+
+    // ========== ENHANCED TOKEN VALIDATION FOR MICROSERVICES ==========
+
+    public boolean validateTokenForService(String token, String serviceName) {
+        try {
+            Claims claims = extractAllClaims(token);
+
+            // Check if token is expired
+            if (claims.getExpiration().before(new Date())) {
+                return false;
+            }
+
+            // Check if service has access
+            List<String> serviceAccess = claims.get("serviceAccess", List.class);
+            if (serviceAccess == null || !serviceAccess.contains(serviceName)) {
+                return false;
+            }
+
+            // Check token type (must be access token for APIs)
+            String tokenType = claims.get("tokenType", String.class);
+            if (!"access".equals(tokenType)) {
+                return false;
+            }
+
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    public boolean validateTokenForServiceWithPermission(String token, String serviceName, String requiredPermission) {
+        try {
+            if (!validateTokenForService(token, serviceName)) {
+                return false;
+            }
+
+            Claims claims = extractAllClaims(token);
+            List<String> permissions = claims.get("permissions", List.class);
+
+            return permissions != null && permissions.contains(requiredPermission);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    // ========== EXTRACT CLAIMS FOR OTHER SERVICES ==========
+
+    public UUID extractUserId(String token) {
+        String userIdStr = extractClaim(token, claims -> claims.get("userId", String.class));
+        return userIdStr != null ? UUID.fromString(userIdStr) : null;
+    }
+
+    public String extractRole(String token) {
+        return extractClaim(token, claims -> claims.get("role", String.class));
+    }
+
+    public String extractSessionId(String token) {
+        return extractClaim(token, claims -> claims.get("sessionId", String.class));
+    }
+
+    public List<String> extractServiceAccess(String token) {
+        return extractClaim(token, claims -> claims.get("serviceAccess", List.class));
+    }
+
+    public List<String> extractPermissions(String token) {
+        return extractClaim(token, claims -> claims.get("permissions", List.class));
+    }
+
+    public String extractTokenId(String token) {
+        return extractClaim(token, Claims::getId);
+    }
+
+    public String extractIssuer(String token) {
+        return extractClaim(token, Claims::getIssuer);
+    }
+
+    public List<String> extractAudience(String token) {
+        return extractClaim(token, claims -> claims.get("aud", List.class));
+    }
+
+    // ========== STANDARD METHODS ==========
 
     public String extractEmail(String token) {
         return extractClaim(token, Claims::getSubject);
@@ -79,7 +193,30 @@ public class JwtService {
         }
     }
 
-    private boolean isTokenExpired(String token) {
+    public boolean isTokenExpired(String token) {
         return extractClaim(token, Claims::getExpiration).before(new Date());
+    }
+
+    // ========== HELPER FOR OTHER SERVICES ==========
+
+    public Map<String, Object> getTokenInfo(String token) {
+        try {
+            Claims claims = extractAllClaims(token);
+            Map<String, Object> info = new HashMap<>();
+            info.put("valid", true);
+            info.put("email", claims.getSubject());
+            info.put("userId", claims.get("userId"));
+            info.put("role", claims.get("role"));
+            info.put("sessionId", claims.get("sessionId"));
+            info.put("serviceAccess", claims.get("serviceAccess"));
+            info.put("permissions", claims.get("permissions"));
+            info.put("expiry", claims.getExpiration());
+            return info;
+        } catch (Exception e) {
+            Map<String, Object> error = new HashMap<>();
+            error.put("valid", false);
+            error.put("error", e.getMessage());
+            return error;
+        }
     }
 }
