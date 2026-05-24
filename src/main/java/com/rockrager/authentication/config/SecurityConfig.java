@@ -63,6 +63,7 @@ public class SecurityConfig {
                                 "/api/auth/reset-password",
                                 "/api/auth/refresh",
                                 "/api/auth/logout",
+                                "/api/test-redis/**",
                                 "/oauth2/**",
                                 "/login/**",
                                 "/test",

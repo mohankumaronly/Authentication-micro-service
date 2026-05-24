@@ -52,6 +52,26 @@ spring:
             token-uri: https://oauth2.googleapis.com/token
             user-info-uri: https://www.googleapis.com/oauth2/v3/userinfo
 
+  # Redis Configuration
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      database: 0
+      timeout: 2000ms
+      lettuce:
+        pool:
+          max-active: 8
+          max-idle: 8
+          min-idle: 0
+
+  # Cache Configuration
+  cache:
+    type: redis
+    redis:
+      time-to-live: 600000
+      cache-null-values: false
+
 server:
   port: ${PORT:8080}
   forward-headers-strategy: framework

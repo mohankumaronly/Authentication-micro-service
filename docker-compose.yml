@@ -25,6 +25,23 @@ services:
     networks:
       - auth-network
 
+  # Redis Cache Service
+  redis:
+    image: redis:7.2-alpine
+    container_name: auth-redis
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - auth-network
+
   # Spring Boot Auth Service
   auth-service:
     build: .
@@ -35,8 +52,10 @@ services:
     depends_on:
       mysql:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     env_file:
-      - .env   # ✅ Load all environment variables from .env file
+      - .env
     environment:
       # Override database connection for Docker (use service name, not localhost)
       SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/auth_db?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
@@ -46,6 +65,10 @@ services:
       # JPA configuration
       SPRING_JPA_HIBERNATE_DDL_AUTO: update
       SPRING_JPA_SHOW_SQL: "true"
+
+      # Redis configuration
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: 6379
 
       # JWT Configuration
       JWT_SECRET: ${JWT_SECRET}
@@ -99,4 +122,6 @@ networks:
 
 volumes:
   mysql_data:
+    driver: local
+  redis_data:
     driver: local
