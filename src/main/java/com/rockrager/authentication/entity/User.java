@@ -35,6 +35,9 @@ public class User {
     private boolean emailVerified = false;
 
     @Column(nullable = false)
+    private boolean pendingVerification = false;
+
+    @Column(nullable = false)
     private String role = "USER";
 
     @Column(nullable = false)
@@ -50,7 +53,6 @@ public class User {
     private String lastLoginDevice;
 
     private String lastLoginLocation;
-
 
     @Column(name = "google_id", unique = true)
     private String googleId;
@@ -75,5 +77,9 @@ public class User {
     @PreUpdate
     protected void onUpdate() {
         updatedAt = LocalDateTime.now();
+    }
+
+    public boolean isActive() {
+        return emailVerified && !pendingVerification;
     }
 }
