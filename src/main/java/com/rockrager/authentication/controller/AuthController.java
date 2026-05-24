@@ -68,6 +68,28 @@ public class AuthController {
         return ResponseEntity.ok(authResponse);
     }
 
+    @PostMapping("/verify-email-code")
+    public ResponseEntity<AuthResponse> verifyEmailCode(
+            @RequestParam String email,
+            @RequestParam String code,
+            HttpServletResponse response) {
+        AuthResponse authResponse = authService.verifyEmailAndCompleteRegistration(email, code);
+        setAuthCookies(response, authResponse);
+        return ResponseEntity.ok(authResponse);
+    }
+
+    @PostMapping("/resend-verification-code")
+    public ResponseEntity<Map<String, String>> resendVerificationCode(
+            @RequestBody Map<String, String> request) {
+        String email = request.get("email");
+        if (email == null || email.isEmpty()) {
+            return ResponseEntity.badRequest().body(Map.of("error", "Email is required"));
+        }
+
+        String result = authService.resendVerificationCode(email);
+        return ResponseEntity.ok(Map.of("message", result));
+    }
+
     @PostMapping("/login")
     public ResponseEntity<AuthResponse> login(
             @RequestBody LoginRequest request,
@@ -116,7 +138,6 @@ public class AuthController {
         AuthResponse authResponse = authService.refreshToken(refreshToken);
         setAuthCookies(response, authResponse);
 
-        // Remove refresh token from response body (only send in cookie)
         authResponse.setRefreshToken(null);
         return ResponseEntity.ok(authResponse);
     }
@@ -133,7 +154,6 @@ public class AuthController {
 
         String result = authService.logout(refreshToken);
 
-        // Clear cookies
         Cookie accessTokenCookie = new Cookie("accessToken", null);
         accessTokenCookie.setPath("/");
         accessTokenCookie.setMaxAge(0);
@@ -148,15 +168,19 @@ public class AuthController {
     }
 
     @PostMapping("/verify-email")
+    @Deprecated
     public ResponseEntity<String> verifyEmail(
             @Valid @RequestBody VerifyEmailRequest request) {
-        return ResponseEntity.ok(authService.verifyEmail(request.getToken()));
+        log.warn("Deprecated verify-email endpoint called. Please use /verify-email-code instead.");
+        return ResponseEntity.badRequest().body("This endpoint is deprecated. Please use the verification code sent to your email.");
     }
 
     @GetMapping("/verify-email")
+    @Deprecated
     public ResponseEntity<String> verifyEmailWithParam(
             @RequestParam String token) {
-        return ResponseEntity.ok(authService.verifyEmail(token));
+        log.warn("Deprecated verify-email endpoint called. Please use /verify-email-code instead.");
+        return ResponseEntity.badRequest().body("This endpoint is deprecated. Please use the verification code sent to your email.");
     }
 
     @PostMapping("/forgot-password")

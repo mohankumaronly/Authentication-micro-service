@@ -520,4 +520,59 @@ public class AuthService {
         String maskedLocal = localPart.substring(0, 2) + "***" + localPart.substring(localPart.length() - 1);
         return maskedLocal + "@" + domain;
     }
+
+    @Transactional
+    public String resendVerificationCode(String email) {
+        log.info("Resending verification code to email: {}", maskEmail(email));
+
+        // Check rate limiting
+        if (rateLimitService.isRegistrationRateLimited(email)) {
+            throw new RuntimeException("Too many resend attempts. Please try again after 15 minutes.");
+        }
+
+        // Check if user already exists and is verified
+        java.util.Optional<User> existingUser = userRepository.findByEmail(email);
+
+        if (existingUser.isPresent()) {
+            User user = existingUser.get();
+
+            // If email is already verified, throw error
+            if (user.isEmailVerified()) {
+                throw new RuntimeException("Email is already verified. Please login.");
+            }
+
+            // If email is not verified, delete the pending user
+            if (!user.isEmailVerified() && user.isPendingVerification()) {
+                log.info("Deleting pending user with unverified email: {}", email);
+                userRepository.delete(user);
+            }
+        }
+
+        // Check if there's existing verification in Redis
+        String redisKey = "email_verification:" + email;
+        EmailVerificationCode existingCode = (EmailVerificationCode) redisService.get(redisKey);
+
+        // Get user details from existing code or throw error
+        String firstName = "User";
+        String lastName = "";
+        String password = "";
+
+        if (existingCode != null) {
+            firstName = existingCode.getFirstName();
+            lastName = existingCode.getLastName();
+            password = existingCode.getPassword();
+            // Delete old code
+            redisService.delete(redisKey);
+        } else {
+            throw new RuntimeException("No pending registration found for this email. Please register again.");
+        }
+
+        // Increment registration attempt counter
+        rateLimitService.incrementRegistrationAttempts(email);
+
+        // Send new verification code
+        sendVerificationCode(email, firstName, lastName, password);
+
+        return "A new verification code has been sent to your email. Please check and verify.";
+    }
 }
