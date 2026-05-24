@@ -68,28 +68,6 @@ public class AuthController {
         return ResponseEntity.ok(authResponse);
     }
 
-    @PostMapping("/verify-email-code")
-    public ResponseEntity<AuthResponse> verifyEmailCode(
-            @RequestParam String email,
-            @RequestParam String code,
-            HttpServletResponse response) {
-        AuthResponse authResponse = authService.verifyEmailAndCompleteRegistration(email, code);
-        setAuthCookies(response, authResponse);
-        return ResponseEntity.ok(authResponse);
-    }
-
-    @PostMapping("/resend-verification-code")
-    public ResponseEntity<Map<String, String>> resendVerificationCode(
-            @RequestBody Map<String, String> request) {
-        String email = request.get("email");
-        if (email == null || email.isEmpty()) {
-            return ResponseEntity.badRequest().body(Map.of("error", "Email is required"));
-        }
-
-        String result = authService.resendVerificationCode(email);
-        return ResponseEntity.ok(Map.of("message", result));
-    }
-
     @PostMapping("/login")
     public ResponseEntity<AuthResponse> login(
             @RequestBody LoginRequest request,
@@ -167,20 +145,10 @@ public class AuthController {
         return ResponseEntity.ok(result);
     }
 
-    @PostMapping("/verify-email")
-    @Deprecated
-    public ResponseEntity<String> verifyEmail(
-            @Valid @RequestBody VerifyEmailRequest request) {
-        log.warn("Deprecated verify-email endpoint called. Please use /verify-email-code instead.");
-        return ResponseEntity.badRequest().body("This endpoint is deprecated. Please use the verification code sent to your email.");
-    }
-
     @GetMapping("/verify-email")
-    @Deprecated
     public ResponseEntity<String> verifyEmailWithParam(
             @RequestParam String token) {
-        log.warn("Deprecated verify-email endpoint called. Please use /verify-email-code instead.");
-        return ResponseEntity.badRequest().body("This endpoint is deprecated. Please use the verification code sent to your email.");
+        return ResponseEntity.ok(authService.verifyEmail(token));
     }
 
     @PostMapping("/forgot-password")

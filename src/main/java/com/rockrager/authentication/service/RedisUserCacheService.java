@@ -17,7 +17,7 @@ public class RedisUserCacheService {
 
     private static final String USER_CACHE_PREFIX = "user:cache:";
     private static final String USER_EMAIL_CACHE_PREFIX = "user:email:";
-    private static final long CACHE_EXPIRY_MINUTES = 60; // Cache user data for 1 hour
+    private static final long CACHE_EXPIRY_MINUTES = 60;
 
     /**
      * Cache a user by ID
@@ -27,11 +27,32 @@ public class RedisUserCacheService {
             return;
         }
 
+        // Create a serializable copy of the user (detach from Hibernate proxy)
+        User serializableUser = new User();
+        serializableUser.setId(user.getId());
+        serializableUser.setFirstName(user.getFirstName());
+        serializableUser.setLastName(user.getLastName());
+        serializableUser.setEmail(user.getEmail());
+        serializableUser.setPassword(user.getPassword());
+        serializableUser.setEmailVerified(user.isEmailVerified());
+        serializableUser.setPendingVerification(user.isPendingVerification());
+        serializableUser.setRole(user.getRole());
+        serializableUser.setOtpEnabled(user.isOtpEnabled());
+        serializableUser.setLastLoginAt(user.getLastLoginAt());
+        serializableUser.setLoginCount(user.getLoginCount());
+        serializableUser.setLastLoginIp(user.getLastLoginIp());
+        serializableUser.setLastLoginDevice(user.getLastLoginDevice());
+        serializableUser.setLastLoginLocation(user.getLastLoginLocation());
+        serializableUser.setGoogleId(user.getGoogleId());
+        serializableUser.setAuthProvider(user.getAuthProvider());
+        serializableUser.setCreatedAt(user.getCreatedAt());
+        serializableUser.setUpdatedAt(user.getUpdatedAt());
+
         String idKey = USER_CACHE_PREFIX + user.getId();
         String emailKey = USER_EMAIL_CACHE_PREFIX + user.getEmail();
 
-        redisService.save(idKey, user, CACHE_EXPIRY_MINUTES);
-        redisService.save(emailKey, user, CACHE_EXPIRY_MINUTES);
+        redisService.save(idKey, serializableUser, CACHE_EXPIRY_MINUTES);
+        redisService.save(emailKey, serializableUser, CACHE_EXPIRY_MINUTES);
 
         log.debug("User cached: {}", user.getEmail());
     }
@@ -120,7 +141,7 @@ public class RedisUserCacheService {
     }
 
     /**
-     * Get cache expiry time in minutesEmailService
+     * Get cache expiry time in minutes
      */
     public long getCacheExpiryMinutes() {
         return CACHE_EXPIRY_MINUTES;

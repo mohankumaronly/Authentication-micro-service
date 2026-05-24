@@ -59,6 +59,7 @@ public class SecurityConfig {
                                 "/api/auth/login/initiate",
                                 "/api/auth/login/verify",
                                 "/api/auth/verify-email",
+                                "/api/auth/verify-otp",
                                 "/api/auth/forgot-password",
                                 "/api/auth/reset-password",
                                 "/api/auth/refresh",
@@ -126,9 +127,6 @@ public class SecurityConfig {
                 response.setContentType("application/json");
                 response.setCharacterEncoding("UTF-8");
                 response.getWriter().write("{\"message\": \"Unauthorized\", \"status\": 401, \"path\": \"" + requestUri + "\"}");
-            }
-            else if (requestUri.startsWith("/oauth2/") || requestUri.startsWith("/login")) {
-                response.setStatus(HttpStatus.UNAUTHORIZED.value());
             }
             else if (requestUri.startsWith("/oauth2/") || requestUri.startsWith("/login")) {
                 response.setStatus(HttpStatus.UNAUTHORIZED.value());

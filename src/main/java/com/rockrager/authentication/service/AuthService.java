@@ -16,7 +16,6 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
-import java.util.Optional;
 import java.util.UUID;
 
 @Slf4j
@@ -36,153 +35,39 @@ public class AuthService {
     private final DeviceInfoService deviceInfoService;
     private final UserSessionRepository userSessionRepository;
 
-    // New Redis services
+    // Redis services
     private final RedisService redisService;
     private final RedisTokenBlacklistService tokenBlacklistService;
-    private final RedisUserSessionService userSessionService;
     private final RedisRateLimitService rateLimitService;
     private final RedisUserCacheService userCacheService;
 
     @Transactional
     public AuthResponse register(RegisterRequest request) {
-        log.info("Registration attempt for email: {}", request.getEmail());
+        log.info("Registering user with email: {}", request.getEmail());
 
-        // Check rate limiting for registration
-        if (rateLimitService.isRegistrationRateLimited(request.getEmail())) {
-            throw new RuntimeException("Too many registration attempts. Please try again after 15 minutes.");
+        if (userRepository.existsByEmail(request.getEmail())) {
+            throw new RuntimeException("Email already registered");
         }
 
-        // Check if user already exists and is verified
-        Optional<User> existingUser = userRepository.findByEmail(request.getEmail());
-
-        if (existingUser.isPresent()) {
-            User user = existingUser.get();
-
-            // If email is already verified, throw error
-            if (user.isEmailVerified()) {
-                throw new RuntimeException("Email already registered. Please login.");
-            }
-
-            // If email is not verified, delete the pending user and allow re-registration
-            if (!user.isEmailVerified() && user.isPendingVerification()) {
-                log.info("Deleting pending user with unverified email: {}", request.getEmail());
-                userRepository.delete(user);
-                // Also clean up any Redis verification data
-                redisService.delete("email_verification:" + request.getEmail());
-            }
-        }
-
-        // Check if there's a pending verification in Redis
-        String redisKey = "email_verification:" + request.getEmail();
-        EmailVerificationCode existingCode = (EmailVerificationCode) redisService.get(redisKey);
-
-        if (existingCode != null) {
-            log.info("Resending verification code to: {}", request.getEmail());
-            // Resend the code
-            sendVerificationCode(request.getEmail(), request.getFirstName(), request.getLastName(), request.getPassword());
-            throw new RuntimeException("A verification code has been sent to your email. Please check and verify.");
-        }
-
-        // Increment registration attempt counter
-        rateLimitService.incrementRegistrationAttempts(request.getEmail());
-
-        // Send verification code via email
-        sendVerificationCode(request.getEmail(), request.getFirstName(), request.getLastName(), request.getPassword());
-
-        return AuthResponse.builder()
-                .message("Verification code sent to your email. Please check and verify to complete registration.")
-                .email(maskEmail(request.getEmail()))
-                .build();
-    }
-
-    private void sendVerificationCode(String email, String firstName, String lastName, String password) {
-        // Generate 6-digit verification code
-        String verificationCode = String.format("%06d", new java.util.Random().nextInt(999999));
-
-        // Store in Redis with 5 minutes expiry
-        EmailVerificationCode verificationData = EmailVerificationCode.builder()
-                .id(email)
-                .email(email)
-                .code(verificationCode)
-                .firstName(firstName)
-                .lastName(lastName)
-                .password(passwordEncoder.encode(password))
-                .createdAt(LocalDateTime.now())
-                .attempts(0)
-                .build();
-
-        redisService.save("email_verification:" + email, verificationData, 5);
-
-        // Send email with verification code
-        try {
-            emailService.sendEmailVerificationCode(email, firstName, verificationCode);
-            log.info("Verification code sent to: {}", email);
-        } catch (Exception e) {
-            log.error("Failed to send verification code to: {}", email, e);
-            throw new RuntimeException("Failed to send verification email. Please try again.");
-        }
-    }
-
-    @Transactional
-    public AuthResponse verifyEmailAndCompleteRegistration(String email, String code) {
-        log.info("Verifying email for: {}", email);
-
-        // Check rate limiting
-        if (rateLimitService.isEmailVerificationRateLimited(email)) {
-            throw new RuntimeException("Too many verification attempts. Please try again after 15 minutes.");
-        }
-
-        // Get verification data from Redis
-        String redisKey = "email_verification:" + email;
-        EmailVerificationCode verificationData = (EmailVerificationCode) redisService.get(redisKey);
-
-        if (verificationData == null) {
-            throw new RuntimeException("Verification code expired or not found. Please register again.");
-        }
-
-        // Check attempts
-        if (verificationData.isMaxAttemptsReached()) {
-            redisService.delete(redisKey);
-            throw new RuntimeException("Too many failed attempts. Please register again.");
-        }
-
-        // Verify code
-        if (!verificationData.getCode().equals(code)) {
-            verificationData.incrementAttempts();
-            redisService.save(redisKey, verificationData, 5);
-            rateLimitService.incrementEmailVerificationAttempts(email);
-            throw new RuntimeException("Invalid verification code. Please try again.");
-        }
-
-        // Code is valid - create the user in database
         User user = User.builder()
-                .firstName(verificationData.getFirstName())
-                .lastName(verificationData.getLastName())
-                .email(verificationData.getEmail())
-                .password(verificationData.getPassword())
-                .emailVerified(true)
-                .pendingVerification(false)
+                .firstName(request.getFirstName())
+                .lastName(request.getLastName())
+                .email(request.getEmail())
+                .password(passwordEncoder.encode(request.getPassword()))
+                .emailVerified(false)
                 .role("USER")
                 .loginCount(0)
                 .otpEnabled(true)
                 .authProvider(AuthProvider.LOCAL)
+                .createdAt(LocalDateTime.now())
+                .updatedAt(LocalDateTime.now())
                 .build();
 
         User savedUser = userRepository.save(user);
-        log.info("User registered and verified successfully: {}", savedUser.getEmail());
+        log.info("User saved with ID: {}", savedUser.getId());
 
-        // Clean up Redis
-        redisService.delete(redisKey);
-
-        // Send welcome email
-        try {
-            emailService.sendWelcomeEmail(savedUser.getEmail(), savedUser.getFirstName());
-        } catch (Exception e) {
-            log.warn("Failed to send welcome email to: {}", savedUser.getEmail(), e);
-        }
-
-        // Generate tokens for auto-login
         String sessionId = UUID.randomUUID().toString();
+
         String accessToken = jwtService.generateAccessToken(
                 savedUser.getEmail(),
                 savedUser.getId(),
@@ -195,25 +80,53 @@ public class AuthService {
                 sessionId
         );
 
-        // Store session in Redis
-        userSessionService.createSession(savedUser.getId().toString(), sessionId, "Registration", "System");
+        refreshTokenRepository.deleteByUser(savedUser);
 
-        // Save refresh token in database
         RefreshToken refreshTokenEntity = RefreshToken.builder()
                 .user(savedUser)
                 .token(refreshToken)
                 .expiresAt(LocalDateTime.now().plusDays(7))
                 .revoked(false)
                 .build();
+
         refreshTokenRepository.save(refreshTokenEntity);
 
-        // Cache user data
+        UserSession userSession = UserSession.builder()
+                .user(savedUser)
+                .sessionId(sessionId)
+                .loginAt(LocalDateTime.now())
+                .active(true)
+                .build();
+        userSessionRepository.save(userSession);
+
+        String verificationToken = UUID.randomUUID().toString();
+
+        EmailVerificationToken emailVerificationTokenEntity = EmailVerificationToken.builder()
+                .token(verificationToken)
+                .user(savedUser)
+                .expiresAt(LocalDateTime.now().plusHours(24))
+                .build();
+
+        emailVerificationTokenRepository.save(emailVerificationTokenEntity);
+
+        // Cache the user
         userCacheService.cacheUser(savedUser);
+
+        try {
+            emailService.sendVerificationEmail(
+                    savedUser.getEmail(),
+                    savedUser.getFirstName(),
+                    verificationToken
+            );
+            log.info("Verification email sent to: {}", savedUser.getEmail());
+        } catch (Exception e) {
+            log.error("Failed to send verification email to: {}", savedUser.getEmail(), e);
+        }
 
         return AuthResponse.builder()
                 .accessToken(accessToken)
                 .refreshToken(refreshToken)
-                .message("Email verified and registration completed successfully!")
+                .message("User registered successfully. Please check your email for verification link.")
                 .build();
     }
 
@@ -260,9 +173,6 @@ public class AuthService {
                     sessionId
             );
 
-            // Store in Redis session
-            userSessionService.createSession(user.getId().toString(), sessionId, request.getDeviceInfo(), request.getIpAddress());
-
             refreshTokenRepository.deleteByUser(user);
             RefreshToken refreshTokenEntity = RefreshToken.builder()
                     .user(user)
@@ -271,6 +181,16 @@ public class AuthService {
                     .revoked(false)
                     .build();
             refreshTokenRepository.save(refreshTokenEntity);
+
+            UserSession userSession = UserSession.builder()
+                    .user(user)
+                    .sessionId(sessionId)
+                    .loginAt(LocalDateTime.now())
+                    .active(true)
+                    .deviceInfo(request.getDeviceInfo())
+                    .ipAddress(request.getIpAddress())
+                    .build();
+            userSessionRepository.save(userSession);
 
             user.setLoginCount(1);
             user.setLastLoginAt(LocalDateTime.now());
@@ -300,7 +220,7 @@ public class AuthService {
                     request.getIpAddress()
             );
 
-            // Store OTP in Redis
+            // Store OTP in Redis as well (for faster access)
             redisService.save("otp:" + sessionId, otpCode, 5);
 
             log.info("OTP sent to user: {} for session: {}", user.getEmail(), sessionId);
@@ -317,6 +237,7 @@ public class AuthService {
 
     @Transactional
     public AuthResponse refreshToken(String refreshToken) {
+
         // Check if token is blacklisted
         if (tokenBlacklistService.isBlacklisted(refreshToken)) {
             throw new RuntimeException("Token has been revoked");
@@ -356,97 +277,76 @@ public class AuthService {
 
     @Transactional
     public String logout(String refreshToken) {
+
         // Blacklist the refresh token
         tokenBlacklistService.blacklistToken(refreshToken, 7);
 
-        // Get the token and revoke it in database
         RefreshToken token = refreshTokenRepository
                 .findByToken(refreshToken)
-                .orElse(null);
+                .orElseThrow(() -> new RuntimeException("Invalid refresh token"));
 
-        if (token != null) {
-            token.setRevoked(true);
-            refreshTokenRepository.save(token);
-
-            // Remove user session from Redis
-            userSessionService.removeSession(token.getUser().getId().toString(), refreshToken);
-        }
+        token.setRevoked(true);
+        refreshTokenRepository.save(token);
 
         return "Logout successful";
     }
 
     @Transactional
-    public AuthResponse verifyOtpAndLogin(OtpVerificationRequest request) {
-        log.info("Verifying OTP for session: {}", request.getSessionId());
+    public String verifyEmail(String token) {
+        EmailVerificationToken verificationToken = emailVerificationTokenRepository
+                .findByToken(token)
+                .orElseThrow(() -> new RuntimeException("Invalid verification token"));
 
-        // Check OTP from Redis
-        String storedOtp = (String) redisService.get("otp:" + request.getSessionId());
-
-        if (storedOtp == null) {
-            throw new RuntimeException("OTP expired or not found. Please request a new OTP.");
+        if (verificationToken.getExpiresAt().isBefore(LocalDateTime.now())) {
+            emailVerificationTokenRepository.delete(verificationToken);
+            throw new RuntimeException("Verification token expired. Please register again.");
         }
 
-        if (!storedOtp.equals(request.getOtpCode())) {
-            throw new RuntimeException("Invalid OTP. Please try again.");
-        }
-
-        // OTP is valid - get the user from the session
-        OtpCode otpRecord = otpService.getOtpRecord(request.getSessionId())
-                .orElseThrow(() -> new RuntimeException("Session not found"));
-
-        User user = otpRecord.getUser();
-
-        // Clean up OTP from Redis
-        redisService.delete("otp:" + request.getSessionId());
-
-        String sessionId = UUID.randomUUID().toString();
-        String accessToken = jwtService.generateAccessToken(
-                user.getEmail(),
-                user.getId(),
-                user.getRole(),
-                sessionId
-        );
-        String refreshToken = jwtService.generateRefreshToken(
-                user.getEmail(),
-                user.getId(),
-                sessionId
-        );
-
-        // Store session in Redis
-        userSessionService.createSession(user.getId().toString(), sessionId, otpRecord.getDeviceInfo(), otpRecord.getIpAddress());
-
-        refreshTokenRepository.deleteByUser(user);
-        RefreshToken refreshTokenEntity = RefreshToken.builder()
-                .user(user)
-                .token(refreshToken)
-                .expiresAt(LocalDateTime.now().plusDays(7))
-                .revoked(false)
-                .build();
-        refreshTokenRepository.save(refreshTokenEntity);
-
-        user.setLoginCount(user.getLoginCount() + 1);
-        user.setLastLoginAt(LocalDateTime.now());
-        user.setLastLoginDevice(otpRecord.getDeviceInfo());
-        user.setLastLoginIp(otpRecord.getIpAddress());
+        User user = verificationToken.getUser();
+        user.setEmailVerified(true);
         userRepository.save(user);
 
         // Update cache
         userCacheService.cacheUser(user);
 
-        otpService.cleanupExpiredOtps(user);
+        emailVerificationTokenRepository.delete(verificationToken);
 
-        log.info("User logged in successfully: {} from IP: {}", user.getEmail(), otpRecord.getIpAddress());
+        log.info("Email verified successfully for user: {} ({})", user.getEmail(), user.getFirstName());
 
-        return AuthResponse.builder()
-                .accessToken(accessToken)
-                .refreshToken(refreshToken)
-                .message("Login successful")
-                .build();
+        sendWelcomeEmailWithRetry(user.getEmail(), user.getFirstName(), 3);
+
+        return "Email verified successfully. You can now login.";
     }
 
-    // Keep existing methods: forgotPassword, resetPassword, maskEmail, etc.
+    private void sendWelcomeEmailWithRetry(String email, String firstName, int maxRetries) {
+        for (int attempt = 1; attempt <= maxRetries; attempt++) {
+            try {
+                emailService.sendWelcomeEmail(email, firstName);
+                log.info("Welcome email sent successfully to: {} on attempt {}", email, attempt);
+                return;
+            } catch (Exception e) {
+                log.warn("Failed to send welcome email to: {} on attempt {}/{}", email, attempt, maxRetries, e);
+                if (attempt == maxRetries) {
+                    log.error("Failed to send welcome email to: {} after {} attempts", email, maxRetries);
+                    storeFailedEmailNotification(email, firstName, "WELCOME");
+                }
+                try {
+                    Thread.sleep(1000 * attempt);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+        }
+    }
+
+    private void storeFailedEmailNotification(String email, String firstName, String emailType) {
+        log.info("Storing failed email notification for: {} of type: {}", email, emailType);
+    }
+
     @Transactional
     public String forgotPassword(String email) {
+
         User user = userRepository.findByEmail(email)
                 .orElseThrow(() -> new RuntimeException("User not found with email: " + email));
 
@@ -481,6 +381,7 @@ public class AuthService {
 
     @Transactional
     public String resetPassword(String token, String newPassword) {
+
         PasswordResetToken resetToken = passwordResetTokenRepository
                 .findByToken(token)
                 .orElseThrow(() -> new RuntimeException("Invalid or expired reset token"));
@@ -491,6 +392,7 @@ public class AuthService {
         }
 
         User user = resetToken.getUser();
+
         user.setPassword(passwordEncoder.encode(newPassword));
         userRepository.save(user);
 
@@ -498,11 +400,237 @@ public class AuthService {
         userCacheService.cacheUser(user);
 
         passwordResetTokenRepository.delete(resetToken);
+
         refreshTokenRepository.deleteByUser(user);
 
         log.info("Password reset successful for user: {}", user.getEmail());
 
         return "Password reset successful. Please login with your new password.";
+    }
+
+    @Transactional
+    public AuthResponse verifyOtpAndLogin(OtpVerificationRequest request) {
+        log.info("Verifying OTP for session: {}", request.getSessionId());
+
+        // Check rate limiting
+        if (rateLimitService.isOtpRateLimited(request.getSessionId())) {
+            throw new RuntimeException("Too many OTP attempts. Please request a new OTP.");
+        }
+
+        boolean isValid = otpService.validateOtp(request.getSessionId(), request.getOtpCode());
+        if (!isValid) {
+            rateLimitService.incrementOtpAttempts(request.getSessionId());
+            throw new RuntimeException("Invalid or expired OTP. Please try again.");
+        }
+
+        // Reset OTP attempts on success
+        rateLimitService.resetOtpAttempts(request.getSessionId());
+
+        OtpCode otpRecord = otpService.getOtpRecord(request.getSessionId())
+                .orElseThrow(() -> new RuntimeException("Session not found"));
+
+        // Get user by ID to avoid Hibernate proxy issues
+        User user = userRepository.findById(otpRecord.getUser().getId())
+                .orElseThrow(() -> new RuntimeException("User not found"));
+
+        // Extract values early to avoid any lazy loading issues
+        String userEmail = user.getEmail();
+        UUID userId = user.getId();
+        String userRole = user.getRole();
+        String userFirstName = user.getFirstName();
+        String userLastName = user.getLastName();
+        String deviceInfo = otpRecord.getDeviceInfo();
+        String ipAddress = otpRecord.getIpAddress();
+
+        String sessionId = UUID.randomUUID().toString();
+        String accessToken = jwtService.generateAccessToken(
+                userEmail,
+                userId,
+                userRole,
+                sessionId
+        );
+        String refreshToken = jwtService.generateRefreshToken(
+                userEmail,
+                userId,
+                sessionId
+        );
+
+        refreshTokenRepository.deleteByUser(user);
+        RefreshToken refreshTokenEntity = RefreshToken.builder()
+                .user(user)
+                .token(refreshToken)
+                .expiresAt(LocalDateTime.now().plusDays(7))
+                .revoked(false)
+                .build();
+        refreshTokenRepository.save(refreshTokenEntity);
+
+        UserSession userSession = UserSession.builder()
+                .user(user)
+                .sessionId(sessionId)
+                .loginAt(LocalDateTime.now())
+                .active(true)
+                .deviceInfo(deviceInfo)
+                .ipAddress(ipAddress)
+                .build();
+        userSessionRepository.save(userSession);
+
+        try {
+            String location = deviceInfoService.getLocationFromIp(ipAddress);
+            user.setLastLoginLocation(location);
+            userSession.setLocation(location);
+        } catch (Exception e) {
+            log.warn("Could not get location for IP: {}", ipAddress);
+        }
+
+        user.setLoginCount(user.getLoginCount() + 1);
+        user.setLastLoginAt(LocalDateTime.now());
+        user.setLastLoginDevice(deviceInfo);
+        user.setLastLoginIp(ipAddress);
+        userRepository.save(user);
+
+        // Update cache
+        userCacheService.cacheUser(user);
+
+        // Clean up Redis OTP
+        redisService.delete("otp:" + request.getSessionId());
+
+        // Send notification email using primitive values, NOT the user proxy or otpRecord
+        try {
+            sendLoginNotificationEmail(userEmail, userFirstName, userLastName, deviceInfo, ipAddress);
+        } catch (Exception e) {
+            log.error("Failed to send login notification email to: {}", userEmail, e);
+        }
+
+        otpService.cleanupExpiredOtps(user);
+
+        log.info("User logged in successfully: {} from IP: {}", userEmail, ipAddress);
+
+        return AuthResponse.builder()
+                .accessToken(accessToken)
+                .refreshToken(refreshToken)
+                .message("Login successful")
+                .build();
+    }
+
+    private void sendLoginNotificationEmail(String email, String firstName, String lastName, String deviceInfo, String ipAddress) {
+        String subject = "New Login Detected - RockRager Authentication";
+        String location = "Unknown Location";
+        String loginTime = LocalDateTime.now().toString();
+
+        String body = String.format("""
+        Hello %s %s,
+        
+        We detected a new login to your account.
+        
+        Login Details:
+        • Time: %s
+        • IP Address: %s
+        • Location: %s
+        • Device: %s
+        
+        If this was you, you can ignore this email.
+        
+        If this wasn't you, please reset your password immediately and contact support.
+        
+        Best regards,
+        RockRager Team
+        """,
+                firstName,
+                lastName,
+                loginTime,
+                ipAddress != null ? ipAddress : "Unknown IP",
+                location,
+                deviceInfo != null ? deviceInfo : "Unknown Device"
+        );
+
+        try {
+            emailService.sendLoginNotificationEmail(email, firstName, subject, body);
+        } catch (Exception e) {
+            log.error("Failed to send login notification", e);
+        }
+    }
+
+    private void sendLoginNotificationEmail(String email, String firstName, String lastName, OtpCode otpRecord) {
+        String subject = "New Login Detected - RockRager Authentication";
+
+        String deviceInfo = otpRecord.getDeviceInfo() != null ? otpRecord.getDeviceInfo() : "Unknown Device";
+        String ipAddress = otpRecord.getIpAddress() != null ? otpRecord.getIpAddress() : "Unknown IP";
+        String location = "Unknown Location";
+        String loginTime = LocalDateTime.now().toString();
+
+        String body = String.format("""
+        Hello %s %s,
+        
+        We detected a new login to your account.
+        
+        Login Details:
+        • Time: %s
+        • IP Address: %s
+        • Location: %s
+        • Device: %s
+        
+        If this was you, you can ignore this email.
+        
+        If this wasn't you, please reset your password immediately and contact support.
+        
+        Best regards,
+        RockRager Team
+        """,
+                firstName,
+                lastName,
+                loginTime,
+                ipAddress,
+                location,
+                deviceInfo
+        );
+
+        try {
+            emailService.sendLoginNotificationEmail(email, firstName, subject, body);
+        } catch (Exception e) {
+            log.error("Failed to send login notification", e);
+        }
+    }
+
+    private void sendLoginNotificationEmail(User user, OtpCode otpRecord) {
+        String subject = "New Login Detected - RockRager Authentication";
+
+        String deviceInfo = otpRecord.getDeviceInfo() != null ? otpRecord.getDeviceInfo() : "Unknown Device";
+        String ipAddress = otpRecord.getIpAddress() != null ? otpRecord.getIpAddress() : "Unknown IP";
+        String location = user.getLastLoginLocation() != null ? user.getLastLoginLocation() : "Unknown Location";
+        String loginTime = LocalDateTime.now().toString();
+
+        String body = String.format("""
+        Hello %s %s,
+        
+        We detected a new login to your account.
+        
+        Login Details:
+        • Time: %s
+        • IP Address: %s
+        • Location: %s
+        • Device: %s
+        
+        If this was you, you can ignore this email.
+        
+        If this wasn't you, please reset your password immediately and contact support.
+        
+        Best regards,
+        RockRager Team
+        """,
+                user.getFirstName(),
+                user.getLastName(),
+                loginTime,
+                ipAddress,
+                location,
+                deviceInfo
+        );
+
+        try {
+            emailService.sendLoginNotificationEmail(user.getEmail(), user.getFirstName(), subject, body);
+        } catch (Exception e) {
+            log.error("Failed to send login notification", e);
+            throw e;
+        }
     }
 
     private String maskEmail(String email) {
@@ -519,60 +647,5 @@ public class AuthService {
 
         String maskedLocal = localPart.substring(0, 2) + "***" + localPart.substring(localPart.length() - 1);
         return maskedLocal + "@" + domain;
-    }
-
-    @Transactional
-    public String resendVerificationCode(String email) {
-        log.info("Resending verification code to email: {}", maskEmail(email));
-
-        // Check rate limiting
-        if (rateLimitService.isRegistrationRateLimited(email)) {
-            throw new RuntimeException("Too many resend attempts. Please try again after 15 minutes.");
-        }
-
-        // Check if user already exists and is verified
-        java.util.Optional<User> existingUser = userRepository.findByEmail(email);
-
-        if (existingUser.isPresent()) {
-            User user = existingUser.get();
-
-            // If email is already verified, throw error
-            if (user.isEmailVerified()) {
-                throw new RuntimeException("Email is already verified. Please login.");
-            }
-
-            // If email is not verified, delete the pending user
-            if (!user.isEmailVerified() && user.isPendingVerification()) {
-                log.info("Deleting pending user with unverified email: {}", email);
-                userRepository.delete(user);
-            }
-        }
-
-        // Check if there's existing verification in Redis
-        String redisKey = "email_verification:" + email;
-        EmailVerificationCode existingCode = (EmailVerificationCode) redisService.get(redisKey);
-
-        // Get user details from existing code or throw error
-        String firstName = "User";
-        String lastName = "";
-        String password = "";
-
-        if (existingCode != null) {
-            firstName = existingCode.getFirstName();
-            lastName = existingCode.getLastName();
-            password = existingCode.getPassword();
-            // Delete old code
-            redisService.delete(redisKey);
-        } else {
-            throw new RuntimeException("No pending registration found for this email. Please register again.");
-        }
-
-        // Increment registration attempt counter
-        rateLimitService.incrementRegistrationAttempts(email);
-
-        // Send new verification code
-        sendVerificationCode(email, firstName, lastName, password);
-
-        return "A new verification code has been sent to your email. Please check and verify.";
     }
 }
