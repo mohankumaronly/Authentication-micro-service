@@ -120,7 +120,7 @@ public class RedisUserCacheService {
     }
 
     /**
-     * Get cache expiry time in minutes
+     * Get cache expiry time in minutesEmailService
      */
     public long getCacheExpiryMinutes() {
         return CACHE_EXPIRY_MINUTES;
