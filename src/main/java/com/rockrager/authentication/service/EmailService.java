@@ -303,4 +303,41 @@ public class EmailService {
             log.error("Failed to send Google welcome email to: {}", to, e);
         }
     }
+
+    @Async
+    public void sendEmailVerificationCode(String to, String firstName, String verificationCode) {
+        log.info("Sending email verification code to: {}", to);
+
+        try {
+            String subject = "Verify Your Email - RockRager Authentication";
+
+            if (htmlEmailEnabled) {
+                String htmlContent = emailTemplateService.buildEmailVerificationCodeTemplate(firstName, verificationCode);
+                sendHtmlEmail(to, subject, htmlContent);
+            } else {
+                String textContent = buildPlainTextVerificationCodeContent(verificationCode);
+                sendPlainTextEmail(to, subject, textContent);
+            }
+
+            log.info("Email verification code sent successfully to: {}", to);
+        } catch (Exception e) {
+            log.error("Failed to send email verification code to: {}", to, e);
+            throw new RuntimeException("Unable to send verification code email", e);
+        }
+    }
+
+    private String buildPlainTextVerificationCodeContent(String verificationCode) {
+        return String.format("""
+            Your email verification code is: %s
+            
+            This code will expire in 5 minutes.
+            
+            Please enter this code to complete your registration.
+            
+            If you didn't create an account, please ignore this email.
+            
+            Best regards,
+            RockRager Team
+            """, verificationCode);
+    }
 }

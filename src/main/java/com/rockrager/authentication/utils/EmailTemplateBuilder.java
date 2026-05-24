@@ -457,4 +457,166 @@ public class EmailTemplateBuilder {
                 vars.get("expiryMinutes")
         );
     }
+
+    public String buildEmailVerificationCode(String userName, String verificationCode) {
+        Map<String, String> variables = Map.of(
+                "userName", userName != null ? userName : "User",
+                "verificationCode", verificationCode,
+                "appName", appName,
+                "supportEmail", supportEmail,
+                "year", String.valueOf(java.time.Year.now().getValue())
+        );
+
+        return getVerificationCodeEmailLayout(
+                "Verify Your Email - " + appName,
+                buildVerificationCodeContent(variables),
+                "verification"
+        );
+    }
+
+    private String getVerificationCodeEmailLayout(String title, String content, String type) {
+        return String.format("""
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>%s</title>
+            <style>
+                body {
+                    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+                    line-height: 1.6;
+                    color: #333;
+                    background-color: #f4f4f5;
+                    margin: 0;
+                    padding: 0;
+                }
+                .container {
+                    max-width: 600px;
+                    margin: 20px auto;
+                    background: #ffffff;
+                    border-radius: 12px;
+                    overflow: hidden;
+                    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+                }
+                .header {
+                    background: linear-gradient(135deg, #22C55E 0%%, #16A34A 100%%);
+                    color: white;
+                    padding: 30px 20px;
+                    text-align: center;
+                }
+                .header h1 {
+                    margin: 0;
+                    font-size: 24px;
+                    font-weight: 600;
+                }
+                .content {
+                    padding: 40px 30px;
+                }
+                .content p {
+                    margin: 15px 0;
+                }
+                .verification-code {
+                    font-size: 48px;
+                    font-weight: bold;
+                    color: #22C55E;
+                    padding: 20px;
+                    background: #F0FDF4;
+                    display: inline-block;
+                    letter-spacing: 8px;
+                    border-radius: 8px;
+                    font-family: monospace;
+                    text-align: center;
+                    width: 100%%;
+                    box-sizing: border-box;
+                }
+                .code-container {
+                    text-align: center;
+                    margin: 30px 0;
+                }
+                .info-box {
+                    background: #F3F4F6;
+                    padding: 15px;
+                    border-radius: 6px;
+                    margin: 20px 0;
+                    text-align: center;
+                }
+                .warning-box {
+                    background: #FEF3C7;
+                    border-left: 4px solid #F59E0B;
+                    padding: 12px;
+                    margin: 20px 0;
+                    font-size: 14px;
+                }
+                .footer {
+                    background: #F9FAFB;
+                    padding: 20px;
+                    text-align: center;
+                    font-size: 12px;
+                    color: #6B7280;
+                    border-top: 1px solid #E5E7EB;
+                }
+                .footer a {
+                    color: #22C55E;
+                    text-decoration: none;
+                }
+                @media (max-width: 600px) {
+                    .container {
+                        margin: 10px;
+                    }
+                    .content {
+                        padding: 20px;
+                    }
+                    .verification-code {
+                        font-size: 32px;
+                        letter-spacing: 4px;
+                    }
+                }
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="header">
+                    <h1>📧 %s</h1>
+                </div>
+                <div class="content">
+                    %s
+                </div>
+                <div class="footer">
+                    <p>© %%s %s. All rights reserved.</p>
+                    <p>Need help? <a href="mailto:%%s">Contact Support</a></p>
+                    <p>This is an automated message, please do not reply to this email.</p>
+                </div>
+            </div>
+        </body>
+        </html>
+        """, title, title, content, "%s", "%s");
+    }
+
+    private String buildVerificationCodeContent(Map<String, String> vars) {
+        return String.format("""
+        <p>Hello <strong>%s</strong>,</p>
+        <p>Thank you for registering with <strong>%s</strong>!</p>
+        <p>Please use the verification code below to complete your registration:</p>
+        
+        <div class="code-container">
+            <div class="verification-code">%s</div>
+        </div>
+        
+        <div class="info-box">
+            ⏰ This verification code is valid for <strong>5 minutes</strong>.
+        </div>
+        
+        <div class="warning-box">
+            ⚠️ If you didn't create an account with %s, please ignore this email.
+        </div>
+        
+        <p>Enter this code on the verification page to activate your account.</p>
+        """,
+                vars.get("userName"),
+                vars.get("appName"),
+                vars.get("verificationCode"),
+                vars.get("appName")
+        );
+    }
 }

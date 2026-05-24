@@ -128,4 +128,39 @@ public class EmailTemplateService {
         </html>
         """, userName, notificationBody);
     }
+
+    public String buildEmailVerificationCodeTemplate(String userName, String verificationCode) {
+        try {
+            return templateBuilder.buildEmailVerificationCode(userName, verificationCode);
+        } catch (Exception e) {
+            log.error("Failed to build email verification code template for user: {}", userName, e);
+            return buildFallbackVerificationCodeTemplate(verificationCode);
+        }
+    }
+
+    private String buildFallbackVerificationCodeTemplate(String verificationCode) {
+        return String.format("""
+            <html>
+            <head>
+                <style>
+                    body { font-family: Arial, sans-serif; line-height: 1.6; }
+                    .code { font-size: 36px; font-weight: bold; color: #4CAF50; padding: 10px; background: #F3F4F6; display: inline-block; letter-spacing: 5px; font-family: monospace; }
+                    .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+                </style>
+            </head>
+            <body>
+                <div class="container">
+                    <h2>Email Verification</h2>
+                    <p>Hello,</p>
+                    <p>Thank you for registering. Please use the verification code below:</p>
+                    <div class="code">%s</div>
+                    <p>This code will expire in <strong>5 minutes</strong>.</p>
+                    <p>If you didn't create an account, please ignore this email.</p>
+                    <hr>
+                    <p style="color: #666; font-size: 12px;">Best regards,<br>RockRager Team</p>
+                </div>
+            </body>
+            </html>
+            """, verificationCode);
+    }
 }
